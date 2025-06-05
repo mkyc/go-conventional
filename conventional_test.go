@@ -1,4 +1,4 @@
-package nextver
+package conventional
 
 import (
 	"reflect"
