@@ -59,7 +59,7 @@ type ConventionalCommit struct {
 func ParseConventionalCommit(commitMessage string) ConventionalCommit {
 	result := ConventionalCommit{
 		Type:         Other,
-		Conventional: false,
+		Conventional: true,
 		Footers:      make(map[string]string),
 	}
 
@@ -83,156 +83,153 @@ func ParseConventionalCommit(commitMessage string) ConventionalCommit {
 	headerRegex := regexp.MustCompile(`^(?i)(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\(([^\)]+)\))?(!)?:\s+(.+)$`)
 	matches := headerRegex.FindStringSubmatch(header)
 
-	if len(matches) == 0 {
-		// Not a conventional commit
+	// If the header matches the conventional commit format
+	if len(matches) > 0 {
+		// Extract type (case-insensitive as per rule 15)
+		commitType := strings.ToLower(matches[1])
+		switch commitType {
+		case "feat":
+			result.Type = Feat
+		case "fix":
+			result.Type = Fix
+		case "docs":
+			result.Type = Docs
+		case "style":
+			result.Type = Style
+		case "refactor":
+			result.Type = Refactor
+		case "perf":
+			result.Type = Perf
+		case "test":
+			result.Type = Test
+		case "build":
+			result.Type = Build
+		case "ci":
+			result.Type = Ci
+		case "chore":
+			result.Type = Chore
+		case "revert":
+			result.Type = Revert
+		default:
+			result.Type = Other
+		}
+
+		// Extract scope if present
+		if matches[2] != "" {
+			result.Scope = matches[2]
+		}
+
+		// Check for breaking change indicator in header
+		if matches[3] == "!" {
+			result.Breaking = true
+		}
+
+		// Extract description from header
+		description := matches[4]
+		result.Description = description
+	} else {
+		// If the header does not match the conventional commit format, treat it as a non-conventional commit
+		result.Conventional = false
+		result.Description = header
+	}
+
+	if len(lines) < 2 {
+		// If there is neither body nor footers, return the result with just the header
 		return result
 	}
 
-	// Mark as conventional since it matched the format
-	result.Conventional = true
-
-	// Extract type (case-insensitive as per rule 15)
-	commitType := strings.ToLower(matches[1])
-	switch commitType {
-	case "feat":
-		result.Type = Feat
-	case "fix":
-		result.Type = Fix
-	case "docs":
-		result.Type = Docs
-	case "style":
-		result.Type = Style
-	case "refactor":
-		result.Type = Refactor
-	case "perf":
-		result.Type = Perf
-	case "test":
-		result.Type = Test
-	case "build":
-		result.Type = Build
-	case "ci":
-		result.Type = Ci
-	case "chore":
-		result.Type = Chore
-	case "revert":
-		result.Type = Revert
-	default:
-		result.Type = Other
+	// Process the rest of the message (description continuation, body, and footers)
+	// Find the first empty line after the header
+	firstEmptyLine := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "" {
+			firstEmptyLine = i
+			break
+		}
 	}
 
-	// Extract scope if present
-	if matches[2] != "" {
-		result.Scope = matches[2]
+	// If there's no empty line, all lines are part of the description
+	if firstEmptyLine == -1 {
+		// Append all lines to the description
+		for i := 1; i < len(lines); i++ {
+			result.Description += "\n" + lines[i]
+		}
+		return result
 	}
 
-	// Check for breaking change indicator in header
-	if matches[3] == "!" {
-		result.Breaking = true
+	// Lines between header and first empty line are part of the description
+	if firstEmptyLine > 1 {
+		for i := 1; i < firstEmptyLine; i++ {
+			result.Description += "\n" + lines[i]
+		}
 	}
 
-	// Extract description
-	result.Description = matches[4]
+	// Skip the header, description continuation, and the empty line
+	bodyStart := firstEmptyLine + 1
+	for bodyStart < len(lines) && strings.TrimSpace(lines[bodyStart]) == "" {
+		bodyStart++
+	}
 
-	// Process the rest of the message (body and footers)
-	if len(lines) > 1 {
-		// First, identify all footer lines
-		footerLines := []int{}
-		bodyLines := []int{}
+	// Find the first footer line
+	firstFooterLine := -1
+	for i := bodyStart; i < len(lines); i++ {
+		if isFooterLine(strings.TrimSpace(lines[i])) {
+			firstFooterLine = i
+			break
+		}
+	}
 
-		// Skip the header and any blank lines immediately after it
-		i := 1
-		for i < len(lines) && strings.TrimSpace(lines[i]) == "" {
-			i++
+	// Extract body (everything between header and first footer)
+	if bodyStart < len(lines) && (firstFooterLine == -1 || bodyStart < firstFooterLine) {
+		bodyEnd := len(lines)
+		if firstFooterLine != -1 {
+			bodyEnd = firstFooterLine
 		}
 
-		// Process remaining lines
-		for ; i < len(lines); i++ {
-			line := strings.TrimSpace(lines[i])
+		// Join all body lines, preserving empty lines
+		result.Body = strings.TrimSpace(strings.Join(lines[bodyStart:bodyEnd], "\n"))
+	}
 
-			// Check if this line is a footer
-			if isFooterLine(line) {
-				footerLines = append(footerLines, i)
-			} else if line != "" || len(bodyLines) > 0 {
-				// Non-empty line or we've already started collecting body lines
-				bodyLines = append(bodyLines, i)
-			}
+	if firstFooterLine == -1 {
+		// If no footer lines found, return the result with just the header, description, and body
+		return result
+	}
+
+	// Process footers (everything after the first footer line)
+	// Find all footer line numbers
+	var footerLineNumbers []int
+	for i := firstFooterLine; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if line != "" && isFooterLine(line) {
+			footerLineNumbers = append(footerLineNumbers, i)
+		}
+	}
+
+	// Divide text into blocks starting with footer lines
+	var footerBlocks [][]string
+	for i := range footerLineNumbers {
+		startIdx := footerLineNumbers[i]
+		endIdx := len(lines)
+		if i < len(footerLineNumbers)-1 {
+			endIdx = footerLineNumbers[i+1]
 		}
 
-		// Extract body if there are body lines
-		if len(bodyLines) > 0 {
-			// Check if any footer lines are mixed with body lines
-			bodyEnd := bodyLines[len(bodyLines)-1]
-			validBodyLines := true
-
-			for _, footerLine := range footerLines {
-				if footerLine < bodyEnd {
-					// Footer line is before the end of the body, so it's part of the body
-					validBodyLines = false
-					break
-				}
-			}
-
-			if validBodyLines {
-				// Extract body with correct newline handling
-				bodyText := make([]string, 0, len(bodyLines))
-
-				// Group lines by paragraphs
-				var currentParagraph []string
-				for i, lineIdx := range bodyLines {
-					line := lines[lineIdx]
-
-					if strings.TrimSpace(line) == "" {
-						// Empty line marks the end of a paragraph
-						if len(currentParagraph) > 0 {
-							// Join the paragraph lines with newlines
-							bodyText = append(bodyText, strings.Join(currentParagraph, "\n"))
-							currentParagraph = nil
-						}
-					} else {
-						// Add line to current paragraph
-						currentParagraph = append(currentParagraph, line)
-					}
-
-					// Handle the last paragraph
-					if i == len(bodyLines)-1 && len(currentParagraph) > 0 {
-						bodyText = append(bodyText, strings.Join(currentParagraph, "\n"))
-					}
-				}
-
-				// Join paragraphs with double newlines
-				result.Body = strings.Join(bodyText, "\n\n")
-			}
+		// Create a block of text for this footer
+		block := make([]string, 0, endIdx-startIdx)
+		for j := startIdx; j < endIdx; j++ {
+			block = append(block, lines[j])
 		}
+		footerBlocks = append(footerBlocks, block)
+	}
 
-		// Process footers
-		for _, lineIdx := range footerLines {
-			line := strings.TrimSpace(lines[lineIdx])
-
-			// Handle BREAKING CHANGE footers
-			if strings.HasPrefix(line, "BREAKING CHANGE:") {
-				value := strings.TrimSpace(line[len("BREAKING CHANGE:"):])
-				result.Footers["BREAKING CHANGE"] = value
+	// Process each footer block
+	for _, block := range footerBlocks {
+		token, value := extractFooter(block)
+		if token != "" && value != "" {
+			result.Footers[token] = value
+			// Check for breaking change
+			if token == "BREAKING CHANGE" || token == "BREAKING-CHANGE" {
 				result.Breaking = true
-			} else if strings.HasPrefix(line, "BREAKING-CHANGE:") {
-				value := strings.TrimSpace(line[len("BREAKING-CHANGE:"):])
-				result.Footers["BREAKING-CHANGE"] = value
-				result.Breaking = true
-			} else {
-				// Regular footer
-				parts := strings.SplitN(line, ":", 2)
-				if len(parts) == 2 {
-					token := strings.TrimSpace(parts[0])
-					value := strings.TrimSpace(parts[1])
-					result.Footers[token] = value
-				} else {
-					// Try hash format
-					parts = strings.SplitN(line, " # ", 2)
-					if len(parts) == 2 {
-						token := strings.TrimSpace(parts[0])
-						value := strings.TrimSpace(parts[1])
-						result.Footers[token] = value
-					}
-				}
 			}
 		}
 	}
@@ -240,20 +237,53 @@ func ParseConventionalCommit(commitMessage string) ConventionalCommit {
 	return result
 }
 
+// patternMatcher is a utility function to return a matches
+func patternMatcher(line string) (string, string) {
+	// Define regex patterns for different footer formats
+	patterns := []struct {
+		regex      *regexp.Regexp
+		valueIndex int
+	}{
+		// Breaking change format with optional colon
+		{regexp.MustCompile(`^(BREAKING CHANGE|BREAKING-CHANGE)(:)?(.*)$`), 3},
+		// Colon format: token: value
+		{regexp.MustCompile(`^([A-Za-z0-9-]+):\s+(.+)$`), 2},
+		// Hash format: token #value
+		{regexp.MustCompile(`^([A-Za-z0-9-]+)\s+#(.+)$`), 2},
+	}
+
+	for _, pattern := range patterns {
+		matches := pattern.regex.FindStringSubmatch(line)
+		if len(matches) > 0 {
+			token := matches[1]
+			value := strings.TrimSpace(matches[pattern.valueIndex])
+			return token, value
+		}
+	}
+
+	return "", ""
+}
+
+// extractFooter takes a block of text starting with a footer line and returns the token and value
+func extractFooter(block []string) (string, string) {
+	token, value := patternMatcher(block[0])
+	if len(token) == 0 || len(value) == 0 {
+		// No valid footer line found
+		return "", ""
+	}
+	// If the footer line is a valid footer, we can extract the value
+	for i := 1; i < len(block); i++ {
+		line := strings.TrimSpace(block[i])
+		if line != "" {
+			value += "\n" + line
+		}
+	}
+
+	return token, value
+}
+
 // isFooterLine checks if a line is a footer line
 func isFooterLine(line string) bool {
-	if line == "" {
-		return false
-	}
-
-	// Check for BREAKING CHANGE footers
-	if strings.HasPrefix(line, "BREAKING CHANGE:") || strings.HasPrefix(line, "BREAKING-CHANGE:") {
-		return true
-	}
-
-	// Check for regular footers (token: value or token # value)
-	colonRegex := regexp.MustCompile(`^([A-Za-z0-9-]+):\s+(.+)$`)
-	hashRegex := regexp.MustCompile(`^([A-Za-z0-9-]+)\s+#\s+(.+)$`)
-
-	return colonRegex.MatchString(line) || hashRegex.MatchString(line)
+	token, value := patternMatcher(line)
+	return len(token) > 0 && len(value) > 0
 }
